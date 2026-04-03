@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Throne & Liberty Spawn Schedule Visualizer - Track active and upcoming chest and moonstone spawns"
+    />
+    <title>Throne & Liberty - Spawn Scheduler</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <header>
+        <h1>⚔️ Throne & Liberty ⚔️</h1>
+        <h2 style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 20px;">
+          Nebula Chest & Moonstone Spawn Schedule
+        </h2>
+        <div class="header-info">
+          <div id="current-time">
+            <span class="date">Loading...</span>
+            <span class="time">--:--</span>
+          </div>
+          <div id="timezone-display">Detecting timezone...</div>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main>
+        <!-- Active Spawn Section -->
+        <section>
+          <h2 class="section-header">🔴 Active Now (20min window)</h2>
+          <div id="current-spawns" class="grid">
+            <div class="no-spawns">Loading spawns...</div>
+          </div>
+        </section>
+
+        <!-- Next Spawn Section -->
+        <section>
+          <h2 class="section-header">⏱️ Next Spawns</h2>
+          <div id="upcoming-controls" class="upcoming-controls">
+            <span>Show next:</span>
+            <button id="preset-0">0</button>
+            <button id="preset-1">1</button>
+            <button id="preset-3">3</button>
+            <button id="preset-5">5</button>
+            <button id="decrease">-</button>
+            <span id="current-count">3</span>
+            <button id="increase">+</button>
+            <span>spawns</span>
+          </div>
+          <div id="next-spawns" class="grid">
+            <div class="no-spawns">Loading spawns...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Scripts (load in order) -->
+    <script src="data.js"></script>
+    <script src="scheduler.js"></script>
+    <script src="ui.js"></script>
+    <script src="timer.js"></script>
+
+    <!-- Initialization Script -->
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        // Initialize UI renderer
+        uiRenderer = new UIRenderer(scheduler);
+        uiRenderer.init();
+
+        // Initialize timer manager
+        timerManager = new TimerManager(scheduler, uiRenderer);
+        timerManager.start();
+
+        console.log(
+          "🎮 Throne & Liberty Spawn Scheduler initialized successfully!"
+        );
+        console.log(
+          "📍 Timezone detected:",
+          scheduler.getDisplayTimezone()
+        );
+        console.log(
+          "📅 Schedule data loaded with",
+          SPAWN_SCHEDULE.length,
+          "spawn entries"
+        );
+      });
+
+      // Optional: Add keyboard shortcut to toggle timer (for debugging)
+      document.addEventListener("keydown", function (e) {
+        if (e.key === " " && e.ctrlKey) {
+          e.preventDefault();
+          timerManager.toggle();
+        }
+      });
+    </script>
+  </body>
+</html>
