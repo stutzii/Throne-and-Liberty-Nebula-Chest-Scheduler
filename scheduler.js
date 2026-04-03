@@ -7,8 +7,15 @@ class SpawnScheduler {
   constructor(spawnData, sourceTimezone = 'Europe/Berlin') {
     this.spawnData = spawnData;
     this.sourceTimezone = sourceTimezone;
-    this.userTimezone = this.detectTimezone();
-  }
+    this.userTimezone = this.detectTimezone();    
+    // Cache parsed spawns (expand once, never reparse)
+    this._parsedSpawns = null;
+    // Cache for memoization
+    this._cachedLastSpawn = null;
+    this._cachedNextSpawn = null;
+    this._lastCacheTime = null;
+    this._timeSinceLast = 0;
+    this._timeUntilNext = 0;  }
 
   /**
    * Detect the user's local timezone
@@ -58,6 +65,23 @@ class SpawnScheduler {
   }
 
   /**
+   * Get current time in source timezone as total seconds since midnight
+   */
+  getCurrentSourceSeconds() {
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: this.sourceTimezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    const timeStr = formatter.format(now);
+    const [hour, minute, second] = timeStr.split(':').map(Number);
+    return hour * 3600 + minute * 60 + second;
+  }
+
+  /**
    * Get current time as HH:MM string in user's timezone
    */
   getCurrentTimeString() {
@@ -85,9 +109,12 @@ class SpawnScheduler {
   /**
    * Parse raw spawn data and attach metadata
    * Expand each row into 20-minute increments (00, 20, 40)
+   * Cached after first call
    */
   parseScheduleData() {
-    return this.spawnData.flatMap((spawn) => {
+    if (this._parsedSpawns) return this._parsedSpawns;
+    
+    this._parsedSpawns = this.spawnData.flatMap((spawn) => {
       const baseMins = this.timeToMinutes(spawn.time);
       return [0, 20, 40].map((offset) => {
         const time = this.minutesToTimeString(baseMins + offset);
@@ -98,6 +125,8 @@ class SpawnScheduler {
         };
       });
     });
+    
+    return this._parsedSpawns;
   }
 
   /**
@@ -147,22 +176,22 @@ class SpawnScheduler {
   }
 
   /**
-   * Calculate minutes until spawn starts, considering day of week in source timezone
+   * Calculate seconds until spawn starts, considering day of week in source timezone
    */
   minutesUntilSpawn(spawn, sourceTimeStr) {
     const currentDay = this.getCurrentSourceWeekday();
-    const currentMins = this.timeToMinutes(sourceTimeStr);
-    const spawnMins = this.timeToMinutes(spawn.time);
+    const currentSeconds = this.getCurrentSourceSeconds();
+    const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
 
     const dayDiff = (spawn.dayOfWeek - currentDay + 7) % 7;
-    let delta = dayDiff * 24 * 60 + (spawnMins - currentMins);
+    let deltaSeconds = dayDiff * 24 * 3600 + (spawnSeconds - currentSeconds);
 
     // If spawn is for today and already passed, roll to next weekly cycle
-    if (dayDiff === 0 && delta <= 0) {
-      delta += 7 * 24 * 60;
+    if (dayDiff === 0 && deltaSeconds <= 0) {
+      deltaSeconds += 7 * 24 * 3600;
     }
 
-    return delta;
+    return deltaSeconds;
   }
 
   /**
@@ -178,24 +207,37 @@ class SpawnScheduler {
 
   /**
    * Get next N upcoming spawns (not including currently active ones)
+   * Cached per second
    */
   getNextSpawns(limit = 5) {
-    const currentTime = this.getCurrentSourceTimeString();
+    const currentSeconds = this.getCurrentSourceSeconds();
     const currentDay = this.getCurrentSourceWeekday();
-    const currentMins = this.timeToMinutes(currentTime);
     const spawns = this.parseScheduleData();
 
     const upcoming = spawns
-      .filter((spawn) => !this.isSpawnActive(spawn, currentTime))
       .map((spawn) => {
-        // Skip same-day spawns that have passed in source timezone.
-        if (spawn.dayOfWeek === currentDay && this.timeToMinutes(spawn.time) <= currentMins) {
+        const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+        
+        // Skip active spawns
+        if (spawn.dayOfWeek === currentDay && currentSeconds >= spawnSeconds && currentSeconds < spawnSeconds + 20 * 60) {
           return null;
+        }
+        
+        // Skip same-day past spawns
+        if (spawn.dayOfWeek === currentDay && spawnSeconds <= currentSeconds) {
+          return null;
+        }
+
+        const dayDiff = (spawn.dayOfWeek - currentDay + 7) % 7;
+        let deltaSeconds = dayDiff * 24 * 3600 + (spawnSeconds - currentSeconds);
+
+        if (dayDiff === 0 && deltaSeconds <= 0) {
+          deltaSeconds += 7 * 24 * 3600;
         }
 
         return {
           ...spawn,
-          minutesUntil: this.minutesUntilSpawn(spawn, currentTime),
+          minutesUntil: deltaSeconds,
         };
       })
       .filter(Boolean)
@@ -216,36 +258,186 @@ class SpawnScheduler {
   }
 
   /**
-   * Get the single current active spawn (or null)
+   * Get seconds since the last spawn ended
    */
-  getCurrentActiveSpawn() {
-    const currentSpawns = this.getCurrentSpawns();
-    return currentSpawns.length > 0 ? currentSpawns[0] : null;
+  getTimeSinceLastSpawn() {
+    const currentSeconds = this.getCurrentSourceSeconds();
+    const spawns = this.parseScheduleData();
+
+    // Find the most recent spawn end time before current time
+    let latestEndSeconds = -Infinity;
+    for (const spawn of spawns) {
+      const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+      const endSeconds = spawnSeconds + 20 * 60; // 20 minutes in seconds
+      if (endSeconds <= currentSeconds) {
+        latestEndSeconds = Math.max(latestEndSeconds, endSeconds);
+      }
+    }
+
+    if (latestEndSeconds === -Infinity) {
+      // No past spawns found (e.g., very early), return 0
+      return 0;
+    }
+
+    return currentSeconds - latestEndSeconds;
   }
 
   /**
-   * Get the next active spawn (the one coming up)
+   * Get all critical timer values in one call
+   * Memoized per second to avoid redundant calculations
    */
-  getNextActiveSpawn() {
+  getTimerSnapshot() {
+    const currentSeconds = this.getCurrentSourceSeconds();
+    const currentDay = this.getCurrentSourceWeekday();
+
+    // Return cached values if within same second
+    if (this._lastCacheTime === currentSeconds) {
+      return {
+        timeSinceLast: this._timeSinceLast,
+        timeUntilNext: this._timeUntilNext,
+        lastSpawn: this._cachedLastSpawn,
+        nextSpawn: this._cachedNextSpawn,
+      };
+    }
+
+    const spawns = this.parseScheduleData();
+    let activeSpawn = null;
+    let activeSpawnStart = null;
+
+    // Prefer active spawn if any (current window is 20 minutes)
+    for (const spawn of spawns) {
+      if (spawn.dayOfWeek !== currentDay) continue;
+      const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+      if (currentSeconds >= spawnSeconds && currentSeconds < spawnSeconds + 20 * 60) {
+        activeSpawn = spawn;
+        activeSpawnStart = spawnSeconds;
+        break;
+      }
+    }
+
+    let lastSpawn = null;
+    let timeSinceLast = 0;
+
+    if (activeSpawn) {
+      lastSpawn = activeSpawn;
+      timeSinceLast = currentSeconds - activeSpawnStart;
+    } else {
+      // Find the most recent ended spawn, accounting for day-of-week
+      let latestEndSeconds = -Infinity;
+      for (const spawn of spawns) {
+        if (spawn.dayOfWeek === currentDay) {
+          const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+          const endSeconds = spawnSeconds + 20 * 60;
+          if (endSeconds <= currentSeconds && endSeconds > latestEndSeconds) {
+            latestEndSeconds = endSeconds;
+            lastSpawn = spawn;
+          }
+        }
+      }
+
+      if (lastSpawn === null) {
+        for (let daysBack = 1; daysBack <= 7; daysBack++) {
+          const targetDay = (currentDay - daysBack + 7) % 7;
+          for (const spawn of spawns) {
+            if (spawn.dayOfWeek === targetDay) {
+              const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+              const endSeconds = spawnSeconds + 20 * 60;
+              if (endSeconds > latestEndSeconds) {
+                latestEndSeconds = endSeconds;
+                lastSpawn = spawn;
+              }
+            }
+          }
+          if (lastSpawn !== null) break;
+        }
+      }
+
+      timeSinceLast = latestEndSeconds === -Infinity ? 0 : currentSeconds - latestEndSeconds;
+    }
+
+    // Find next spawn
+    let nextSpawn = null;
+    let minDelta = Infinity;
+
+    for (const spawn of spawns) {
+      const spawnSeconds = this.timeToMinutes(spawn.time) * 60;
+      const dayDiff = (spawn.dayOfWeek - currentDay + 7) % 7;
+      let deltaSeconds = dayDiff * 24 * 3600 + (spawnSeconds - currentSeconds);
+
+      if (dayDiff === 0 && deltaSeconds <= 0) {
+        deltaSeconds += 7 * 24 * 3600;
+      }
+
+      if (deltaSeconds > 0 && deltaSeconds < minDelta) {
+        minDelta = deltaSeconds;
+        nextSpawn = spawn;
+      }
+    }
+
+    const timeUntilNext = nextSpawn ? minDelta : 0;
+
+    // Cache results by second
+    this._lastCacheTime = currentSeconds;
+    this._timeSinceLast = timeSinceLast;
+    this._timeUntilNext = timeUntilNext;
+    this._cachedLastSpawn = lastSpawn;
+    this._cachedNextSpawn = nextSpawn;
+
+    return { timeSinceLast, timeUntilNext, lastSpawn, nextSpawn };
+  }
+
+  /**
+   * Get the last spawn that ended
+   */
+  getLastSpawn() {
+    const currentTime = this.getCurrentSourceTimeString();
+    const currentMins = this.timeToMinutes(currentTime);
+    const spawns = this.parseScheduleData();
+
+    let latestSpawn = null;
+    let latestEnd = -Infinity;
+    for (const spawn of spawns) {
+      const spawnMins = this.timeToMinutes(spawn.time);
+      const endMins = spawnMins + 20;
+      if (endMins <= currentMins && endMins > latestEnd) {
+        latestEnd = endMins;
+        latestSpawn = spawn;
+      }
+    }
+
+    return latestSpawn;
+  }
+
+  /**
+   * Get the next upcoming spawn
+   */
+  getNextSpawn() {
     const nextSpawns = this.getNextSpawns(1);
     return nextSpawns.length > 0 ? nextSpawns[0] : null;
   }
 
   /**
-   * Format minutes into a readable time string
-   * e.g., 125 minutes -> "2h 5m"
+   * Format seconds into a readable time string
+   * e.g., 3665 seconds -> "1h 1m 5s"
+   * Only shows seconds if total is less than 60 seconds
    */
-  formatCountdown(minutes) {
-    if (minutes < 0) return "Past";
+  formatCountdown(seconds) {
+    if (seconds < 0) return "Past";
     
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
     
-    if (hours === 0) {
-      return `${mins}m`;
+    // Only show seconds if total is less than 60 seconds
+    const showSeconds = seconds < 60;
+    
+    if (hours === 0 && mins === 0) {
+      return showSeconds ? `${secs}s` : `0m`;
+    } else if (hours === 0) {
+      return showSeconds ? `${mins}m ${secs}s` : `${mins}m`;
+    } else {
+      return showSeconds ? `${hours}h ${mins}m ${secs}s` : `${hours}h ${mins}m`;
     }
-    
-    return `${hours}h ${mins}m`;
   }
 
   /**

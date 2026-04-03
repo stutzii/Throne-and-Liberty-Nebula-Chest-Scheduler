@@ -6,36 +6,112 @@
 class UIRenderer {
   constructor(scheduler) {
     this.scheduler = scheduler;
-    this.activeSpawnsContainer = document.getElementById("current-spawns");
     this.nextSpawnsContainer = document.getElementById("next-spawns");
+    
+    // Cache DOM references for timer updates (no re-querying)
+    this.lastTimerValue = document.getElementById("last-timer-value");
+    this.nextTimerValue = document.getElementById("next-timer-value");
+    this.currentTimerValue = document.getElementById("current-timer-value");
+    this.currentDateElement = document.getElementById("current-date");
+    this.currentTzElement = document.getElementById("current-timezone");
+    this.lastSpawnLocations = document.getElementById("last-spawn-locations");
+    this.nextSpawnLocations = document.getElementById("next-spawn-locations");
+    
+    // Cache last displayed spawns to detect changes
+    this._lastDisplayedLastSpawn = null;
+    this._lastDisplayedNextSpawn = null;
+    this._lastDisplayedNextSpawns = null;
   }
 
   /**
-   * Render active spawns into the current-spawns container
+   * Render spawn timers - only updates changed values, not full rebuild
    */
-  renderActiveSpawns(spawns) {
-    if (!this.activeSpawnsContainer) {
-      console.warn("Element #current-spawns not found");
-      return;
+  renderSpawnTimers() {
+    const snapshot = this.scheduler.getTimerSnapshot();
+    const { timeSinceLast, timeUntilNext, lastSpawn, nextSpawn } = snapshot;
+
+    // Update timer values only (text content, not HTML rebuild)
+    if (this.lastTimerValue) {
+      this.lastTimerValue.textContent = this.scheduler.formatCountdown(timeSinceLast);
     }
 
-    if (spawns.length === 0) {
-      this.activeSpawnsContainer.innerHTML = `
-        <div class="no-spawns">
-          No active spawns right now. Check back soon!
-        </div>
-      `;
-      return;
+    if (this.nextTimerValue) {
+      this.nextTimerValue.textContent = this.scheduler.formatCountdown(timeUntilNext);
     }
 
-    // Only show the current active spawn as a single combined card
-    const spawn = spawns[0];
-    const html = this.createCombinedSpawnCard(spawn, "active");
-    this.activeSpawnsContainer.innerHTML = html;
+    // Update current time
+    if (this.currentTimerValue) {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      this.currentTimerValue.textContent = timeStr;
+    }
+
+    // Update date only if element exists and cache is empty
+    if (this.currentDateElement && !this._dateUpdated) {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
+      this.currentDateElement.textContent = dateStr;
+      this._dateUpdated = true;
+    }
+
+    // Update timezone only if element exists and cache is empty
+    if (this.currentTzElement && !this._tzUpdated) {
+      const tz = this.scheduler.getDisplayTimezone();
+      this.currentTzElement.textContent = `Timezone: ${tz}`;
+      this._tzUpdated = true;
+    }
+
+    // Update last spawn locations only if spawn changed (compare by ID, not reference)
+    const lastSpawnId = lastSpawn ? lastSpawn.id : null;
+    const lastDisplayedId = this._lastDisplayedLastSpawn ? this._lastDisplayedLastSpawn.id : null;
+    if (lastSpawn && lastSpawnId !== lastDisplayedId) {
+      if (this.lastSpawnLocations) {
+        this.lastSpawnLocations.innerHTML = `
+          <div class="spawn-item chest-item">
+            <span class="spawn-icon">📦</span>
+            <span class="spawn-location">${lastSpawn.chest.location}</span>
+          </div>
+          <div class="spawn-item moonstone-item">
+            <span class="spawn-icon">💎</span>
+            <span class="spawn-location">${lastSpawn.moonstone.location}</span>
+          </div>
+        `;
+      }
+      this._lastDisplayedLastSpawn = lastSpawn;
+    }
+
+    // Update next spawn locations only if spawn changed (compare by ID, not reference)
+    const nextSpawnId = nextSpawn ? nextSpawn.id : null;
+    const nextDisplayedId = this._lastDisplayedNextSpawn ? this._lastDisplayedNextSpawn.id : null;
+    if (nextSpawn && nextSpawnId !== nextDisplayedId) {
+      if (this.nextSpawnLocations) {
+        this.nextSpawnLocations.innerHTML = `
+          <div class="spawn-item chest-item">
+            <span class="spawn-icon">📦</span>
+            <span class="spawn-location">${nextSpawn.chest.location}</span>
+          </div>
+          <div class="spawn-item moonstone-item">
+            <span class="spawn-icon">💎</span>
+            <span class="spawn-location">${nextSpawn.moonstone.location}</span>
+          </div>
+        `;
+      }
+      this._lastDisplayedNextSpawn = nextSpawn;
+    }
   }
 
   /**
    * Render next spawns into the next-spawns container
+   * Only updates when spawn list actually changes
    */
   renderNextSpawns(spawns) {
     if (!this.nextSpawnsContainer) {
@@ -43,20 +119,27 @@ class UIRenderer {
       return;
     }
 
+    // Check if spawn list has actually changed
+    const spawnIds = spawns.map(s => s.id).join(',');
+    if (this._lastDisplayedNextSpawns === spawnIds) {
+      return; // No change, skip re-render
+    }
+
     if (spawns.length === 0) {
       this.nextSpawnsContainer.innerHTML = `
         <div class="no-spawns">
-          -
+          No more spawns scheduled for today.
         </div>
       `;
-      return;
+    } else {
+      // Show a compact list of upcoming spawns
+      const html = spawns
+        .map((spawn) => this.createCombinedSpawnCard(spawn, "next", true))
+        .join("");
+      this.nextSpawnsContainer.innerHTML = html;
     }
 
-    // Show a compact list of upcoming spawns
-    const html = spawns
-      .map((spawn) => this.createCombinedSpawnCard(spawn, "next", true))
-      .join("");
-    this.nextSpawnsContainer.innerHTML = html;
+    this._lastDisplayedNextSpawns = spawnIds;
   }
 
   /**
@@ -120,34 +203,7 @@ class UIRenderer {
   /**
    * Update the timezone display
    */
-  updateTimezoneDisplay() {
-    const tzElement = document.getElementById("timezone-display");
-    if (tzElement) {
-      const tz = this.scheduler.getDisplayTimezone();
-      tzElement.textContent = `Timezone: ${tz}`;
-    }
-  }
-
-  /**
-   * Update the current time display
-   */
-  updateTimeDisplay() {
-    const timeElement = document.getElementById("current-time");
-    if (timeElement) {
-      const currentTime = this.scheduler.getCurrentTimeString();
-      const now = new Date();
-      const dateStr = now.toLocaleDateString("en-US", {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      });
-
-      timeElement.innerHTML = `
-        <span class="date">${dateStr}</span>
-        <span class="time">${currentTime}</span>
-      `;
-    }
-  }
+  // Removed - now integrated into renderSpawnTimers()
 
   /**
    * Initialize UI on page load
@@ -210,20 +266,13 @@ class UIRenderer {
     }
 
     this.renderAll();
-    this.updateTimezoneDisplay();
-    this.updateTimeDisplay();
-
-    // Update time display every second
-    setInterval(() => {
-      this.updateTimeDisplay();
-    }, 1000);
   }
 
   renderAll() {
-    const active = this.scheduler.getCurrentSpawns();
-    const next = this.scheduler.getNextSpawns(this.upcomingCount);
-
-    this.renderActiveSpawns(active);
+    this.renderSpawnTimers();
+    // Get next spawns starting from the one after the immediate next
+    const allNext = this.scheduler.getNextSpawns(this.upcomingCount + 1);
+    const next = allNext.slice(1); // Skip the immediate next
     this.renderNextSpawns(next);
   }
 }

@@ -63,16 +63,50 @@ class TimerManager {
    * Called every second
    */
   updateCountdowns() {
-    // Update "time until next spawn" countdowns
+    // Get all timer values at once (memoized fetch)
+    const snapshot = this.scheduler.getTimerSnapshot();
+
+    // Update timer display values only
+    const lastValue = document.getElementById("last-timer-value");
+    if (lastValue) {
+      lastValue.textContent = this.scheduler.formatCountdown(snapshot.timeSinceLast);
+    }
+
+    const nextValue = document.getElementById("next-timer-value");
+    if (nextValue) {
+      nextValue.textContent = this.scheduler.formatCountdown(snapshot.timeUntilNext);
+    }
+
+    const currentValue = document.getElementById("current-timer-value");
+    if (currentValue) {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      currentValue.textContent = timeStr;
+    }
+
+    // Update "time until next spawn" countdowns in upcoming list
     const allCountdownElements = document.querySelectorAll("[data-countdown-id]");
     allCountdownElements.forEach((element) => {
       const spawnId = element.getAttribute("data-countdown-id");
       const spawn = this.findSpawnById(spawnId);
 
       if (spawn) {
-        const currentTime = this.scheduler.getCurrentTimeString();
-        const minutesUntil = this.scheduler.minutesUntilSpawn(spawn, currentTime);
-        const formatted = this.scheduler.formatCountdown(minutesUntil);
+        const currentSeconds = this.scheduler.getCurrentSourceSeconds();
+        const currentDay = this.scheduler.getCurrentSourceWeekday();
+        const spawnSeconds = this.scheduler.timeToMinutes(spawn.time) * 60;
+        const dayDiff = (spawn.dayOfWeek - currentDay + 7) % 7;
+        let deltaSeconds = dayDiff * 24 * 3600 + (spawnSeconds - currentSeconds);
+
+        if (dayDiff === 0 && deltaSeconds <= 0) {
+          deltaSeconds += 7 * 24 * 3600;
+        }
+
+        const formatted = this.scheduler.formatCountdown(deltaSeconds);
         element.textContent = formatted;
       }
     });
@@ -84,13 +118,12 @@ class TimerManager {
       const spawn = this.findSpawnById(spawnId);
 
       if (spawn) {
-        const currentTime = this.scheduler.getCurrentTimeString();
-        const currentMins = this.scheduler.timeToMinutes(currentTime);
-        const spawnMins = this.scheduler.timeToMinutes(spawn.time);
-        const minutesRemaining = 20 - (currentMins - spawnMins);
+        const currentSeconds = this.scheduler.getCurrentSourceSeconds();
+        const spawnSeconds = this.scheduler.timeToMinutes(spawn.time) * 60;
+        const secondsRemaining = 20 * 60 - (currentSeconds - spawnSeconds);
         
-        if (minutesRemaining > 0) {
-          element.textContent = `${Math.ceil(minutesRemaining)}m`;
+        if (secondsRemaining > 0) {
+          element.textContent = `${Math.ceil(secondsRemaining / 60)}m`;
         } else {
           element.textContent = "0m";
         }

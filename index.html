@@ -18,22 +18,30 @@
         <h2 style="font-size: 1.2rem; color: var(--text-secondary); margin-bottom: 20px;">
           Nebula Chest & Moonstone Spawn Schedule
         </h2>
-        <div class="header-info">
-          <div id="current-time">
-            <span class="date">Loading...</span>
-            <span class="time">--:--</span>
-          </div>
-          <div id="timezone-display">Detecting timezone...</div>
-        </div>
       </header>
 
       <!-- Main Content -->
       <main>
         <!-- Active Spawn Section -->
         <section>
-          <h2 class="section-header">🔴 Active Now (20min window)</h2>
-          <div id="current-spawns" class="grid">
-            <div class="no-spawns">Loading spawns...</div>
+          <h2 class="section-header">⏱️ Spawn Timers</h2>
+          <div class="timer-row">
+            <div id="last-spawn-timer" class="timer-box">
+              <h3>Time Since Last Spawn</h3>
+              <div id="last-timer-value">--:--:--</div>
+              <div id="last-spawn-locations"></div>
+            </div>
+            <div id="current-time-timer" class="timer-box">
+              <h3>Current Time (Local)</h3>
+              <div id="current-timer-value">--:--:--</div>
+              <div id="current-date" style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 10px;">Loading...</div>
+              <div id="current-timezone" style="font-size: 0.85rem; color: var(--text-secondary);">Detecting timezone...</div>
+            </div>
+            <div id="next-spawn-timer" class="timer-box">
+              <h3>Time Until Next Spawn</h3>
+              <div id="next-timer-value">--:--:--</div>
+              <div id="next-spawn-locations"></div>
+            </div>
           </div>
         </section>
 
